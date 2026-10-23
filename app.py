@@ -1,5 +1,16 @@
 
 
+from datetime import date
+import io
+
+from db_utils import (
+    initialize_goals_table,
+    add_savings_goal,
+    get_savings_goals,
+    update_savings_progress,
+    delete_savings_goal,
+)
+
 from ai_utils import generate_financial_advice
 from db_utils import (
     initialize_db,
@@ -32,6 +43,7 @@ st.caption(
 
 # ---------- Database initialization ----------
 initialize_db()
+initialize_goals_table()
 
 
 # ---------- Add transaction ----------
@@ -358,3 +370,192 @@ if st.button(
         )
         # Details are available locally for troubleshooting.
         st.exception(error)
+
+
+
+# ---------- Savings Goal Planner ----------
+st.divider()
+st.header("🎯 Savings Goal Planner")
+
+st.write(
+    "Set a savings target, track your progress, "
+    "and estimate the monthly contribution required."
+)
+
+with st.expander("Create a new savings goal", expanded=False):
+    with st.form("savings_goal_form", clear_on_submit=True):
+        goal_name = st.text_input(
+            "Goal name",
+            placeholder="e.g. Emergency fund",
+        )
+
+        target_amount = st.number_input(
+            "Target amount (BDT ৳)",
+            min_value=1.0,
+            value=50000.0,
+            step=1000.0,
+        )
+
+        current_amount = st.number_input(
+            "Amount already saved (BDT ৳)",
+            min_value=0.0,
+            value=0.0,
+            step=500.0,
+        )
+
+        deadline = st.date_input(
+            "Target date",
+            value=date.today(),
+            min_value=date.today(),
+        )
+
+        goal_submitted = st.form_submit_button(
+            "Create Savings Goal",
+            type="primary",
+        )
+
+        if goal_submitted:
+            try:
+                add_savings_goal(
+                    goal_name,
+                    target_amount,
+                    current_amount,
+                    deadline,
+                )
+                st.success("Savings goal created successfully!")
+                st.rerun()
+            except ValueError as error:
+                st.error(str(error))
+
+goals = get_savings_goals()
+
+if goals.empty:
+    st.info("You have not created any savings goals yet.")
+else:
+    for _, goal in goals.iterrows():
+        goal_id = int(goal["ID"])
+        target = float(goal["Target"])
+        saved = float(goal["Saved"])
+        remaining = max(target - saved, 0.0)
+        progress = min(saved / target, 1.0)
+
+        st.subheader(str(goal["Goal"]))
+
+        metric1, metric2, metric3 = st.columns(3)
+        metric1.metric("Target", f"৳{target:,.2f}")
+        metric2.metric("Saved", f"৳{saved:,.2f}")
+        metric3.metric("Remaining", f"৳{remaining:,.2f}")
+
+        st.progress(progress)
+        st.caption(f"Progress: {progress * 100:.1f}%")
+
+        deadline_date = date.fromisoformat(str(goal["Deadline"]))
+        days_left = max((deadline_date - date.today()).days, 0)
+        months_left = max(
+            (deadline_date.year - date.today().year) * 12
+            + deadline_date.month - date.today().month
+            + (1 if deadline_date.day > date.today().day else 0),
+            1,
+        )
+
+        if remaining == 0:
+            st.success("Congratulations! This goal is complete.")
+        else:
+            st.write(
+                f"Deadline: {deadline_date.isoformat()} "
+                f"({days_left} days remaining)"
+            )
+            st.write(
+                f"Estimated monthly saving needed: "
+                f"৳{remaining / months_left:,.2f}"
+            )
+
+        with st.form(f"goal_progress_{goal_id}"):
+            new_saved = st.number_input(
+                "Update total saved (BDT ৳)",
+                min_value=0.0,
+                max_value=target,
+                value=saved,
+                step=500.0,
+                key=f"saved_{goal_id}",
+            )
+
+            update_clicked = st.form_submit_button(
+                "Update Progress"
+            )
+
+            if update_clicked:
+                try:
+                    update_savings_progress(
+                        goal_id, new_saved
+                    )
+                    st.success("Savings progress updated.")
+                    st.rerun()
+                except ValueError as error:
+                    st.error(str(error))
+
+        if st.button(
+            "Delete this goal",
+            key=f"delete_goal_{goal_id}",
+        ):
+            delete_savings_goal(goal_id)
+            st.rerun()
+
+        st.divider()
+
+
+
+# ---------- Monthly Financial Report ----------
+st.header("📄 Monthly Financial Report")
+
+report_data = monthly.copy()
+
+if not report_data.empty:
+    report_income = float(
+        report_data.loc[
+            report_data["Type"] == "Income", "Amount"
+        ].sum()
+    )
+
+    report_expenses = float(
+        report_data.loc[
+            report_data["Type"] == "Expense", "Amount"
+        ].sum()
+    )
+
+    report_balance = report_income - report_expenses
+
+    report = pd.DataFrame(
+        [
+            {"Metric": "Total Income (BDT)", "Amount": report_income},
+            {"Metric": "Total Expenses (BDT)", "Amount": report_expenses},
+            {"Metric": "Remaining Balance (BDT)", "Amount": report_balance},
+            {
+                "Metric": "Savings Rate (%)",
+                "Amount": (
+                    report_balance / report_income * 100
+                    if report_income > 0 else 0.0
+                ),
+            },
+        ]
+    )
+
+    st.dataframe(report, use_container_width=True, hide_index=True)
+
+    csv_buffer = io.StringIO()
+    report_data.to_csv(
+        csv_buffer,
+        index=False,
+        date_format="%Y-%m-%d",
+    )
+
+    st.download_button(
+        "⬇️ Download Monthly Transactions (CSV)",
+        data=csv_buffer.getvalue(),
+        file_name=f"finance_report_{selected_month}.csv",
+        mime="text/csv",
+    )
+else:
+    st.info(
+        "No transactions are available for the selected month."
+    )
