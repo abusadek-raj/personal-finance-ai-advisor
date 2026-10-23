@@ -1,5 +1,13 @@
 
 
+from ai_utils import generate_financial_advice
+from db_utils import (
+    initialize_db,
+    add_transaction,
+    get_transactions,
+    delete_transaction,
+)
+import sqlite3
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -22,47 +30,8 @@ st.caption(
     "and build better savings habits."
 )
 
-# ---------- Session state ----------
-if "transactions" not in st.session_state:
-    today = date.today()
-
-    st.session_state.transactions = [
-        {
-            "Date": today - timedelta(days=5),
-            "Type": "Income",
-            "Category": "Salary",
-            "Description": "Monthly salary (demo)",
-            "Amount": 50000.0,
-        },
-        {
-            "Date": today - timedelta(days=4),
-            "Type": "Expense",
-            "Category": "Housing",
-            "Description": "House rent (demo)",
-            "Amount": 12000.0,
-        },
-        {
-            "Date": today - timedelta(days=3),
-            "Type": "Expense",
-            "Category": "Food",
-            "Description": "Groceries (demo)",
-            "Amount": 4500.0,
-        },
-        {
-            "Date": today - timedelta(days=2),
-            "Type": "Expense",
-            "Category": "Transport",
-            "Description": "Transportation (demo)",
-            "Amount": 1500.0,
-        },
-        {
-            "Date": today - timedelta(days=1),
-            "Type": "Expense",
-            "Category": "Utilities",
-            "Description": "Utility bills (demo)",
-            "Amount": 2000.0,
-        },
-    ]
+# ---------- Database initialization ----------
+initialize_db()
 
 
 # ---------- Add transaction ----------
@@ -128,41 +97,36 @@ with st.sidebar:
             use_container_width=True,
         )
 
+        
         if submitted:
             if amount <= 0:
                 st.error("Please enter an amount greater than zero.")
             elif not description.strip():
                 st.error("Please enter a transaction description.")
             else:
-                st.session_state.transactions.append(
-                    {
-                        "Date": transaction_date,
-                        "Type": transaction_type,
-                        "Category": category,
-                        "Description": description.strip(),
-                        "Amount": float(amount),
-                    }
-                )
-                st.success("Transaction added successfully!")
-                st.rerun()
+                try:
+                    add_transaction(
+                        transaction_date=transaction_date,
+                        transaction_type=transaction_type,
+                        category=category,
+                        description=description,
+                        amount=amount,
+                    )
+                    st.success("Transaction saved to SQLite!")
+                    st.rerun()
+                except (ValueError, sqlite3.Error) as error:
+                    st.error(f"Could not save transaction: {error}")
+
 
 
 
 # ---------- Data preparation ----------
-transactions = pd.DataFrame(
-    st.session_state.transactions
-)
+transactions = get_transactions()
 
-if transactions.empty:
-    transactions = pd.DataFrame(
-        columns=[
-            "Date",
-            "Type",
-            "Category",
-            "Description",
-            "Amount",
-        ]
-    )
+if not transactions.empty:
+    transactions["Date"] = pd.to_datetime(
+        transactions["Date"]
+    ).dt.date
 
 # ---------- Month filter ----------
 st.subheader("📊 Financial Dashboard")
@@ -278,6 +242,7 @@ with right:
     fig.update_traces(texttemplate="৳%{y:,.0f}", textposition="outside")
     st.plotly_chart(fig, use_container_width=True)
 
+
 # ---------- Transaction history ----------
 st.subheader("📋 Transaction History")
 
@@ -286,21 +251,110 @@ if not monthly.empty:
         "Date", ascending=False
     ).copy()
 
-    history["Date"] = history["Date"].astype(str)
-    history["Amount"] = history["Amount"].map(
+    # Show the database ID internally for deletion, but not in the table.
+    display_history = history.drop(
+        columns=["ID"], errors="ignore"
+    ).copy()
+
+    display_history["Date"] = (
+        display_history["Date"].astype(str)
+    )
+    display_history["Amount"] = display_history["Amount"].map(
         lambda value: f"৳{value:,.2f}"
     )
 
     st.dataframe(
-        history,
+        display_history,
         use_container_width=True,
         hide_index=True,
     )
+
+    st.caption("Select a transaction below to delete it.")
+
+    if "ID" in history.columns:
+        transaction_options = {
+            (
+                f'{row["Date"]} | {row["Type"]} | '
+                f'{row["Category"]} | '
+                f'৳{row["Amount"]:,.2f} | '
+                f'{row["Description"]}'
+            ): int(row["ID"])
+            for _, row in history.iterrows()
+        }
+
+        selected_label = st.selectbox(
+            "Transaction to delete",
+            options=list(transaction_options.keys()),
+            key="transaction_to_delete",
+        )
+
+        if st.button("Delete selected transaction"):
+            deleted = delete_transaction(
+                transaction_options[selected_label]
+            )
+
+            if deleted:
+                st.success("Transaction deleted.")
+                st.rerun()
+            else:
+                st.warning(
+                    "Transaction was not found. Refresh and try again."
+                )
 else:
     st.info("No transactions are available for this month.")
 
-st.caption(
-    "Demo version: transactions are held in session memory "
-    "and are not permanently saved. Sample transactions are "
-    "illustrative, not real financial records."
+
+
+# ---------- AI Financial Advisor ----------
+st.divider()
+st.subheader("🤖 AI Financial Advisor")
+
+st.write(
+    "Get practical budgeting and savings suggestions based "
+    "on your selected month's financial summary."
 )
+
+st.caption(
+    "Your financial totals are calculated by Python. "
+    "The AI provides general informational guidance."
+)
+
+if st.button(
+    "✨ Generate My Financial Advice",
+    type="primary",
+):
+    try:
+        with st.spinner(
+            "Analyzing your financial summary..."
+        ):
+            expense_categories = calculate_expense_by_category(
+                monthly
+            )
+
+            advice = generate_financial_advice(
+                income=income,
+                expenses=expenses,
+                balance=balance,
+                savings_rate=savings_rate,
+                expense_categories=expense_categories,
+            )
+
+        st.markdown("### Your Personalized Suggestions")
+        st.markdown(advice)
+
+        st.caption(
+            "AI-generated guidance may be inaccurate. "
+            "Review suggestions carefully before making financial decisions."
+        )
+
+    except ValueError as error:
+        st.error(str(error))
+
+    except Exception as error:
+        st.error(
+            "Unable to generate financial advice. "
+            "Check your internet connection, Groq API key, "
+            "model availability, and API usage limits."
+        )
+        # Details are available locally for troubleshooting.
+        st.exception(error)
