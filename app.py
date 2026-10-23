@@ -4,6 +4,10 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from datetime import date, timedelta
+from finance_utils import (
+    calculate_financial_summary,
+    calculate_expense_by_category,
+)
 
 st.set_page_config(
     page_title="Personal Finance AI Advisor",
@@ -197,16 +201,12 @@ if not transactions.empty:
 else:
     monthly = transactions.copy()
 
-income = monthly.loc[
-    monthly["Type"] == "Income", "Amount"
-].sum()
+summary = calculate_financial_summary(monthly)
 
-expenses = monthly.loc[
-    monthly["Type"] == "Expense", "Amount"
-].sum()
-
-balance = income - expenses
-savings_rate = (balance / income * 100) if income > 0 else 0.0
+income = summary["income"]
+expenses = summary["expenses"]
+balance = summary["balance"]
+savings_rate = summary["savings_rate"]
 
 # ---------- Summary metrics ----------
 col1, col2, col3, col4 = st.columns(4)
@@ -242,9 +242,8 @@ with left:
     ]
 
     if not expense_data.empty:
-        category_totals = (
-            expense_data.groupby("Category", as_index=False)["Amount"]
-            .sum()
+        category_totals = calculate_expense_by_category(
+                            expense_data
         )
 
         fig = px.pie(
